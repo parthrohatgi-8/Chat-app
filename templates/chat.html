@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Chat</title>
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+<style>
+body{margin:0;height:100vh;display:flex;font-family:Arial;background:#0f172a;color:#e5e7eb}
+.sidebar{width:28%;background:#020617;border-right:1px solid #1e293b}
+.side-header{padding:16px;color:#38bdf8;font-weight:bold}
+.user{padding:14px;border-bottom:1px solid #1e293b;cursor:pointer}
+.user.active{background:#1e293b}
+.chat{width:72%;display:flex;flex-direction:column}
+.chat-header{padding:16px;background:#020617;border-bottom:1px solid #1e293b}
+.messages{flex:1;padding:20px;overflow-y:auto}
+.msg{max-width:60%;margin-bottom:12px;padding:10px;border-radius:10px}
+.me{background:#38bdf8;color:black;margin-left:auto}
+.other{background:#1e293b}
+.time{font-size:10px;opacity:.6;text-align:right}
+.input{display:flex;padding:15px;background:#020617}
+.input input{flex:1;padding:10px;border-radius:8px;border:1px solid #1e293b;
+background:#020617;color:white}
+.input button{margin-left:10px;background:#38bdf8;border:none;
+padding:10px 16px;border-radius:8px;cursor:pointer}
+</style>
+</head>
+
+<body>
+<div class="sidebar">
+<div class="side-header">My ID: {{ uid }}</div>
+<div style="padding:10px">
+<input id="friend" placeholder="Friend ID">
+<button onclick="connect()">➕</button>
+</div>
+<div id="chatList"></div>
+</div>
+
+<div class="chat">
+<div id="chatHeader" class="chat-header">Select a chat</div>
+<div id="typing"></div>
+<div id="chat" class="messages"></div>
+<div class="input">
+<input id="msg" placeholder="Type message">
+<button onclick="send()">Send</button>
+</div>
+</div>
+
+<script>
+let socket=io();
+let myid=Number("{{ uid }}");
+let active=null,room=null;
+
+function connect(){
+let fid=friend.value;
+fetch(`/get_user/${fid}`).then(r=>r.json()).then(d=>{
+if(!document.getElementById("u"+fid)){
+let div=document.createElement("div");
+div.id="u"+fid;div.className="user";
+div.innerText=d.username+" ("+fid+")";
+div.onclick=()=>openChat(fid,d.username);
+chatList.appendChild(div);}
+openChat(fid,d.username);
+});
+}
+
+function openChat(fid,name){
+active=fid;
+room=Math.min(myid,fid)+"_"+Math.max(myid,fid);
+chatHeader.innerText=name;
+document.querySelectorAll(".user").forEach(u=>u.classList.remove("active"));
+document.getElementById("u"+fid).classList.add("active");
+chat.innerHTML="";
+socket.emit("join",{room});
+socket.emit("load_history",{sender:myid,receiver:fid});
+}
+
+function send(){
+if(!msg.value||!active)return;
+socket.emit("send_message",{room:room,sender:myid,receiver:active,message:msg.value});
+msg.value="";
+}
+
+msg.addEventListener("input",()=>room&&socket.emit("typing",{room:room,user:myid}));
+
+socket.on("receive_message",d=>add(d.sender,d.message,d.time));
+socket.on("chat_history",m=>m.forEach(x=>add(x.sender,x.message,x.time)));
+socket.on("typing_status",d=>{
+typing.innerText=d.user+" is typing...";
+setTimeout(()=>typing.innerText="",1000);
+});
+
+function add(s,m,t){
+let div=document.createElement("div");
+div.className="msg "+(s==myid?"me":"other");
+div.innerHTML=m+"<div class='time'>"+t+"</div>";
+chat.appendChild(div);
+chat.scrollTop=chat.scrollHeight;
+}
+</script>
+</body>
+</html>
