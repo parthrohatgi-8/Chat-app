@@ -4,3 +4,4 @@ venv/
 chat_logs/
 keys/
 .env
+db_setup.py
