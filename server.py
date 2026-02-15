@@ -1,35 +1,74 @@
+import os
+import base64
+import hashlib
+import random
+from datetime import datetime
+
 from flask import Flask, render_template, request, redirect, session, jsonify
 from flask_socketio import SocketIO, join_room, emit
-import mysql.connector, hashlib, random, os, base64
-from datetime import datetime
-from Crypto.Random import get_random_bytes
 
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
+from Crypto.Random import get_random_bytes
 from crypto_utils import (
     generate_rsa_keys,
-    rsa_encrypt_key,
-    rsa_decrypt_key,
     aes_encrypt,
     aes_decrypt
 )
 
+# ------------------ APP INIT ------------------
+
 app = Flask(__name__)
-app.secret_key = "secret"
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret")
+
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# ---------- DATABASE ----------
-db = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="root",
-    database="chat_app"
-)
-cursor = db.cursor(dictionary=True)
+# ------------------ DATABASE ------------------
 
-# ---------- CHAT STORAGE ----------
-CHAT_DIR = "chat_logs"
-os.makedirs(CHAT_DIR, exist_ok=True)
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# ---------- HELPERS ----------
+if not DATABASE_URL:
+    raise Exception("DATABASE_URL not set")
+
+db = psycopg2.connect(DATABASE_URL)
+cursor = db.cursor(cursor_factory=RealDictCursor)
+
+# ------------------ CREATE TABLES ------------------
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(50) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    unique_id INTEGER UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS conversations (
+    id SERIAL PRIMARY KEY,
+    user1 INTEGER NOT NULL,
+    user2 INTEGER NOT NULL,
+    aes_key TEXT NOT NULL
+);
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS messages (
+    id SERIAL PRIMARY KEY,
+    sender INTEGER NOT NULL,
+    receiver INTEGER NOT NULL,
+    message TEXT NOT NULL,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+""")
+
+db.commit()
+
+# ------------------ HELPERS ------------------
+
 def hash_pw(p):
     return hashlib.sha256(p.encode()).hexdigest()
 
@@ -40,24 +79,32 @@ def gen_uid():
         if not cursor.fetchone():
             return uid
 
-def chat_file(a, b):
-    x, y = sorted([str(a), str(b)])
-    return f"{CHAT_DIR}/{x}_{y}.txt"
+def get_conversation(sender, receiver):
+    user1, user2 = sorted([sender, receiver])
+    cursor.execute(
+        "SELECT * FROM conversations WHERE user1=%s AND user2=%s",
+        (user1, user2)
+    )
+    return cursor.fetchone()
 
-# ---------- ROUTES ----------
+# ------------------ ROUTES ------------------
+
 @app.route("/", methods=["GET","POST"])
 def login():
     if request.method == "POST":
         u = request.form["username"]
         p = hash_pw(request.form["password"])
+
         cursor.execute(
             "SELECT unique_id FROM users WHERE username=%s AND password=%s",
             (u,p)
         )
         user = cursor.fetchone()
+
         if user:
             session["uid"] = user["unique_id"]
             return redirect("/chat")
+
     return render_template("login.html")
 
 @app.route("/register", methods=["GET","POST"])
@@ -72,8 +119,10 @@ def register():
             (u,p,uid)
         )
         db.commit()
+
         generate_rsa_keys(uid)
         return redirect("/")
+
     return render_template("register.html")
 
 @app.route("/chat")
@@ -84,80 +133,92 @@ def chat():
 
 @app.route("/get_user/<uid>")
 def get_user(uid):
-    cursor.execute("SELECT username FROM users WHERE unique_id=%s", (uid,))
+    cursor.execute(
+        "SELECT username FROM users WHERE unique_id=%s",
+        (uid,)
+    )
     u = cursor.fetchone()
     return jsonify({"username": u["username"] if u else "Unknown"})
 
-# 🔁 RESTORE CHAT LIST
-@app.route("/my_chats/<uid>")
-def my_chats(uid):
-    chats = []
-    for f in os.listdir(CHAT_DIR):
-        if uid in f:
-            other = f.replace(".txt","").replace(uid,"").replace("_","")
-            chats.append(other)
-    return jsonify(chats)
+# ------------------ SOCKET EVENTS ------------------
 
-# ---------- SOCKET ----------
 @socketio.on("join")
 def join(data):
     join_room(data["room"])
 
 @socketio.on("send_message")
 def send_message(data):
-    sender = data["sender"]
-    receiver = data["receiver"]
+
+    sender = int(data["sender"])
+    receiver = int(data["receiver"])
     room = data["room"]
-    path = chat_file(sender, receiver)
 
-    # AES key handling (PERSISTENT)
-    if not os.path.exists(path):
+    conversation = get_conversation(sender, receiver)
+
+    if not conversation:
         aes_key = get_random_bytes(32)
-        enc_key = rsa_encrypt_key(aes_key, receiver)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("---AESKEY---\n")
-            f.write(enc_key + "\n")
-            f.write("---MESSAGES---\n")
+        enc_key = base64.b64encode(aes_key).decode()
+
+        user1, user2 = sorted([sender, receiver])
+
+        cursor.execute(
+            "INSERT INTO conversations (user1,user2,aes_key) VALUES (%s,%s,%s)",
+            (user1,user2,enc_key)
+        )
+        db.commit()
     else:
-        with open(path, "r", encoding="utf-8") as f:
-            enc_key = f.readlines()[1]
-            aes_key = rsa_decrypt_key(enc_key, receiver)
+        aes_key = base64.b64decode(conversation["aes_key"])
 
-    encrypted = base64.b64encode(aes_encrypt(data["message"], aes_key)).decode()
-    time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    encrypted = base64.b64encode(
+        aes_encrypt(data["message"], aes_key)
+    ).decode()
 
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(f"[{time}]|{sender}|{encrypted}\n")
+    cursor.execute(
+        "INSERT INTO messages (sender,receiver,message) VALUES (%s,%s,%s)",
+        (sender,receiver,encrypted)
+    )
+    db.commit()
 
     emit("receive_message", {
         "sender": sender,
         "message": data["message"],
-        "time": time
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }, room=room)
 
 @socketio.on("load_history")
 def load_history(data):
-    sender = data["sender"]
-    receiver = data["receiver"]
-    path = chat_file(sender, receiver)
 
-    if not os.path.exists(path):
-        return emit("chat_history", [])
+    sender = int(data["sender"])
+    receiver = int(data["receiver"])
 
-    with open(path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
+    conversation = get_conversation(sender, receiver)
 
-    aes_key = rsa_decrypt_key(lines[1], sender)
+    if not conversation:
+        emit("chat_history", [])
+        return
+
+    aes_key = base64.b64decode(conversation["aes_key"])
+
+    cursor.execute("""
+        SELECT sender,message,timestamp
+        FROM messages
+        WHERE (sender=%s AND receiver=%s)
+           OR (sender=%s AND receiver=%s)
+        ORDER BY timestamp ASC
+    """, (sender,receiver,receiver,sender))
+
+    rows = cursor.fetchall()
+
     msgs = []
-
-    for line in lines[3:]:
-        t, rest = line.split("]|")
-        s, enc = rest.split("|",1)
-        text = aes_decrypt(base64.b64decode(enc.strip()), aes_key)
+    for row in rows:
+        decrypted = aes_decrypt(
+            base64.b64decode(row["message"]),
+            aes_key
+        )
         msgs.append({
-            "time": t.replace("[",""),
-            "sender": s,
-            "message": text
+            "sender": row["sender"],
+            "message": decrypted,
+            "time": row["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
         })
 
     emit("chat_history", msgs)
@@ -166,5 +227,7 @@ def load_history(data):
 def typing(data):
     emit("typing_status", data, room=data["room"], include_self=False)
 
+# ------------------ RUN ------------------
+
 if __name__ == "__main__":
-    socketio.run(app, host="0.0.0.0", port=5000)
+    socketio.run(app)

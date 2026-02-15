@@ -1,0 +1,6 @@
+flask
+flask-socketio
+eventlet
+gunicorn
+pycryptodome
+psycopg2-binary
