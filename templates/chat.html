@@ -11,7 +11,15 @@ body{margin:0;height:100vh;display:flex;font-family:Arial;background:#0f172a;col
 .user.active{background:#1e293b}
 .chat{width:72%;display:flex;flex-direction:column}
 .chat-header{padding:16px;background:#020617;border-bottom:1px solid #1e293b}
-.messages{flex:1;padding:20px;overflow-y:auto}
+.messages {
+    flex:1;
+    padding:20px;
+    overflow-y:auto;
+    background-color: #0f172a;
+    background-image: radial-gradient(#1e293b 1px, transparent 1px);
+    background-size: 25px 25px;
+}
+
 .msg{max-width:60%;margin-bottom:12px;padding:10px;border-radius:10px}
 .me{background:#38bdf8;color:black;margin-left:auto}
 .other{background:#1e293b}
