@@ -139,6 +139,20 @@ def get_user(uid):
     )
     u = cursor.fetchone()
     return jsonify({"username": u["username"] if u else "Unknown"})
+@app.route("/my_chats/<uid>")
+def my_chats(uid):
+    cursor.execute("""
+        SELECT DISTINCT 
+        CASE 
+            WHEN sender=%s THEN receiver 
+            ELSE sender 
+        END AS friend_id
+        FROM messages
+        WHERE sender=%s OR receiver=%s
+    """, (uid, uid, uid))
+
+    rows = cursor.fetchall()
+    return jsonify([r["friend_id"] for r in rows])
 
 # ------------------ SOCKET EVENTS ------------------
 

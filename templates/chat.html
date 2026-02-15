@@ -95,6 +95,27 @@ div.innerHTML=m+"<div class='time'>"+t+"</div>";
 chat.appendChild(div);
 chat.scrollTop=chat.scrollHeight;
 }
+window.onload = function() {
+  fetch(`/my_chats/${myid}`)
+    .then(r => r.json())
+    .then(ids => {
+      ids.forEach(fid => {
+        fetch(`/get_user/${fid}`)
+          .then(r => r.json())
+          .then(d => {
+            if(!document.getElementById("u"+fid)){
+              let div=document.createElement("div");
+              div.id="u"+fid;
+              div.className="user";
+              div.innerText=d.username+" ("+fid+")";
+              div.onclick=()=>openChat(fid,d.username);
+              chatList.appendChild(div);
+            }
+          });
+      });
+    });
+}
+
 </script>
 </body>
 </html>
